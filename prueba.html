@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        .container { max-width: 800px; margin: 20px auto; padding: 20px; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; margin-bottom: 5px; }
+        .form-group input { width: 100%; padding: 8px; }
+        .files-list { margin-top: 20px; }
+        .download-options { margin-top: 20px; padding: 10px; background: #f5f5f5; border-radius: 4px; }
+        .progress-bar { 
+            width: 100%; 
+            background-color: #f0f0f0; 
+            padding: 3px; 
+            border-radius: 3px; 
+            box-shadow: inset 0 1px 3px rgba(0, 0, 0, .2);
+        }
+        .progress-bar-fill { 
+            display: block; 
+            height: 22px; 
+            background-color: #659cef; 
+            border-radius: 3px; 
+            transition: width 500ms ease-in-out; 
+        }
+        .status-message {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .status-message.error { background-color: #ffebee; }
+		.status-message.success { background-color: #e8f5e9; }
+		.status-message.warning { background-color: #fff3e0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>S3 File Downloader</h1>
+        
+        <div class="form-group">
+            <label>Account ID:</label>
+            <input type="text" id="accountId">
+        </div>
+
+        <div class="form-group">
+            <label>URL del Bucket:</label>
+            <input type="text" id="bucketUrl">
+        </div>
+
+        <div class="form-group">
+            <label>Usuario (Access Key ID):</label>
+            <input type="text" id="username">
+        </div>
+
+        <div class="form-group">
+            <label>Contraseña (Secret Access Key):</label>
+            <input type="password" id="password">
+        </div>
+
+        <div class="form-group">
+            <label>ARN de la política IAM:</label>
+            <input type="text" id="iamArn">
+        </div>
+        
+        <div class="form-group">
+            <label>Región:</label>
+            <input type="text" id="region" value="eu-west-1">
+        </div>
+
+        <div class="download-options">
+            <button onclick="getFilesFromS3()">Iniciar Descarga y Procesamiento</button>
+        </div>
+
+        <div id="progressArea">
+            <div class="progress-bar">
+                <span class="progress-bar-fill" style="width: 0%"></span>
+            </div>
+            <div id="progressText"></div>
+        </div>
+
+        <div id="messageArea" class="status-message"></div>
+        <div id="filesList" class="files-list"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+	<script src="https://sdk.amazonaws.com/js/aws-sdk-2.1001.0.min.js"></script>
+    <script>
+        async function getFilesFromS3() {
+            try {
+                const accountId = document.getElementById('accountId').value;
+                const bucketUrl = document.getElementById('bucketUrl').value;
+                const username = document.getElementById('username').value;
+                const password = document.getElementById('password').value;
+                const iamArn = document.getElementById('iamArn').value;
+                const region = document.getElementById('region').value || 'eu-west-1';
+
+                if (!accountId || !bucketUrl || !username || !password || !iamArn) {
+                    showMessage('Por favor complete todos los campos', 'error');
+                    return;
+                }
+
+                // Show progress area
+                document.getElementById('progressArea').style.display = 'block';
+                
+                // Initialize AWS SDK
+                AWS.config.update({
+                    accessKeyId: username,
+                    secretAccessKey: password,
+                    region: region // Utiliza la región especificada
+                });
+
+                // Configurar IAM (en este caso, solo muestra el ARN)
+                console.log(`Usando política IAM con ARN: ${iamArn}`);
+
+                const s3 = new AWS.S3();
+                
+                // Parse bucket name from URL
+                const bucketName = bucketUrl.split('/')[0].split('.')[0];
+
+                // List all objects in the bucket
+                const listParams = {
+                    Bucket: bucketName
+                };
+
+                const data = await s3.listObjectsV2(listParams).promise();
+                const files = data.Contents;
+
+                if (!files || files.length === 0) {
+                    showMessage('No se encontraron archivos en el bucket', 'warning');
+                    return;
+                }
+
+                // Clear previous file list
+                const filesList = document.getElementById('filesList');
+                filesList.innerHTML = '';
+
+                // Update progress maximum
+                const totalFiles = files.length;
+                let downloadedFiles = 0;
+
+                // Process each file
+                for (const file of files) {
+                    try {
+                        const downloadParams = {
+                            Bucket: bucketName,
+                            Key: file.Key
+                        };
+
+                        // Download file
+                        const fileData = await s3.getObject(downloadParams).promise();
+                        
+                        // Create download link
+                        const blob = new Blob([fileData.Body], { type: fileData.ContentType });
+                        const url = URL.createObjectURL(blob);
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = file.Key;
+                        
+                        // Add to files list
+                        const listItem = document.createElement('div');
+                        listItem.className = 'file-item';
+                        listItem.innerHTML = `
+                            <span>${file.Key}</span>
+                            <button onclick="window.open('${url}', '_blank')">Descargar</button>
+                        `;
+                        filesList.appendChild(listItem);
+
+                        // Update progress
+                        downloadedFiles++;
+                        updateProgress(downloadedFiles, totalFiles);
+
+                    } catch (fileError) {
+                        console.error(`Error downloading file ${file.Key}:`, fileError);
+                        showMessage(`Error al descargar ${file.Key}: ${fileError.message}`, 'error');
+                    }
+                }
+
+                showMessage('Descarga completada', 'success');
+
+            } catch (error) {
+                console.error('Error in getFilesFromS3:', error);
+                showMessage(`Error: ${error.message}`, 'error');
+                updateProgress(0, 1); // Reset progress
+            }
+        }
+
+        function updateProgress(current, total) {
+            const percentage = Math.round((current / total) * 100);
+            const progressBar = document.querySelector('.progress-bar-fill');
+            const progressText = document.getElementById('progressText');
+            
+            progressBar.style.width = `${percentage}%`;
+            progressText.textContent = `Progreso: ${percentage}% (${current}/${total} archivos)`;
+        }
+
+        function showMessage(message, type = 'info') {
+            const messageArea = document.getElementById('messageArea');
+            messageArea.className = `status-message ${type}`;
+            messageArea.textContent = message;
+        }
+    </script>
+</body>
+</html>
