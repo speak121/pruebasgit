@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1174.0.min.js"></script>
+    <style>
+        .container { max-width: 800px; margin: 20px auto; padding: 20px; }
+        .form-group { margin-bottom: 15px; }
+        .progress-bar { 
+            width: 100%; 
+            background-color: #f0f0f0; 
+            margin-top: 10px;
+            display: none;
+        }
+        .progress-bar-fill { 
+            height: 20px; 
+            background-color: #4CAF50; 
+            width: 0%; 
+            transition: width 300ms;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>S3 Bucket Downloader</h1>
+        
+        <div class="form-group">
+            <label>Access Key ID:</label>
+            <input type="text" id="accessKeyId">
+        </div>
+        
+        <div class="form-group">
+            <label>Secret Access Key:</label>
+            <input type="password" id="secretAccessKey">
+        </div>
+        
+        <div class="form-group">
+            <label>Bucket Name:</label>
+            <input type="text" id="bucketName">
+        </div>
+        
+        <div class="form-group">
+            <label>Region:</label>
+            <input type="text" id="region" value="us-east-1">
+        </div>
+
+        <button onclick="startDownload()">Descargar Archivos</button>
+
+        <div id="status"></div>
+        <div class="progress-bar" id="progressBar">
+            <div class="progress-bar-fill" id="progressBarFill"></div>
+        </div>
+    </div>
+
+    <script>
+        let s3;
+        let downloadedFiles = new Set();
+
+        async function configureS3() {
+            const accessKeyId = document.getElementById('accessKeyId').value;
+            const secretAccessKey = document.getElementById('secretAccessKey').value;
+            const region = document.getElementById('region').value;
+
+            AWS.config.update({
+                accessKeyId: accessKeyId,
+                secretAccessKey: secretAccessKey,
+                region: region
+            });
+
+            s3 = new AWS.S3();
+        }
+
+        async function listAllS3Objects(bucket) {
+            let objects = [];
+            let response;
+            let params = {
+                Bucket: bucket,
+                MaxKeys: 1000
+            };
+
+            do {
+                response = await s3.listObjectsV2(params).promise();
+                objects = objects.concat(response.Contents);
+                params.ContinuationToken = response.NextContinuationToken;
+            } while (response.IsTruncated);
+
+            return objects;
+        }
+
+        async function downloadS3Object(bucket, key) {
+            const params = {
+                Bucket: bucket,
+                Key: key
+            };
+
+            const response = await s3.getObject(params).promise();
+            return response.Body;
+        }
+
+        function getDateFromKey(key) {
+            // Asumimos que la clave contiene una fecha en formato YYYY-MM-DD
+            const match = key.match(/(\d{4})-(\d{2})-(\d{2})/);
+            if (match) {
+                return {
+                    year: match[1],
+                    month: match[2],
+                    day: match[3]
+                };
+            }
+            return null;
+        }
+
+        async function createZipForDay(files) {
+            const zip = new JSZip();
+            
+            for (const file of files) {
+                const content = await file.content;
+                zip.file(file.name, content);
+            }
+
+            // También crear archivo unificado
+            let unifiedContent = '';
+            for (const file of files) {
+                const content = await file.content.text();
+                unifiedContent += content + '\n';
+            }
+            zip.file('unified.txt', unifiedContent);
+
+            return zip.generateAsync({type: 'blob'});
+        }
+
+        async function startDownload() {
+            try {
+                const status = document.getElementById('status');
+                const progressBar = document.getElementById('progressBar');
+                const progressBarFill = document.getElementById('progressBarFill');
+                
+                status.textContent = 'Configurando conexión...';
+                progressBar.style.display = 'block';
+                await configureS3();
+
+                const bucketName = document.getElementById('bucketName').value;
+                
+                status.textContent = 'Obteniendo lista de archivos...';
+                const objects = await listAllS3Objects(bucketName);
+                
+                // Organizar archivos por fecha
+                const filesByDate = new Map();
+                
+                for (let i = 0; i < objects.length; i++) {
+                    const object = objects[i];
+                    const date = getDateFromKey(object.Key);
+                    
+                    if (date) {
+                        const dateKey = `${date.year}-${date.month}-${date.day}`;
+                        if (!filesByDate.has(dateKey)) {
+                            filesByDate.set(dateKey, []);
+                        }
+                        
+                        status.textContent = `Descargando ${object.Key}...`;
+                        const content = await downloadS3Object(bucketName, object.Key);
+                        
+                        filesByDate.get(dateKey).push({
+                            name: object.Key,
+                            content: new Blob([content])
+                        });
+                        
+                        // Actualizar progreso
+                        const progress = ((i + 1) / objects.length * 100).toFixed(1);
+                        progressBarFill.style.width = `${progress}%`;
+                    }
+                }
+
+                // Crear y descargar ZIPs por día
+                for (const [dateKey, files] of filesByDate) {
+                    const [year, month, day] = dateKey.split('-');
+                    
+                    status.textContent = `Creando ZIP para ${dateKey}...`;
+                    const zipContent = await createZipForDay(files);
+                    
+                    // Crear estructura de carpetas si no existe
+                    const folderPath = `${year}/${month}`;
+                    const zipName = `${day}.zip`;
+                    
+                    // Descargar ZIP
+                    const downloadUrl = URL.createObjectURL(zipContent);
+                    const link = document.createElement('a');
+                    link.href = downloadUrl;
+                    link.download = `${folderPath}/${zipName}`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(downloadUrl);
+                }
+
+                status.textContent = 'Descarga completada';
+            } catch (error) {
+                document.getElementById('status').textContent = `Error: ${error.message}`;
+                console.error(error);
+            }
+        }
+    </script>
+</body>
+</html>
